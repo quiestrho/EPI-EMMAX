@@ -108,6 +108,50 @@ double mult_vec_mat_vec ( double* vec, double* mat, int n );
 // stat
 double tcdf(double t, double nu);
 
+static void compute_phenotype_summary_stats(double *rval_mean,
+					    double *rval_var,
+					    double *phenotypes,
+					    int n) {
+  int i;
+  double m, msq;
+
+  m = 0.;
+  msq = 0.;
+  for(i=0; i < n; i++) {
+    m += phenotypes[i];
+    msq += phenotypes[i]*phenotypes[i];
+  }
+  m /= n;
+  
+  *rval_mean = m;
+  *rval_var = msq - m*m;
+}
+
+static double compute_regressed_phenotype_variance(double *phenotypes,
+						   int n,
+						   double *betas,
+						   double *covariates,
+						   int n_covariates) {
+  int i, j;
+  double m, msq;
+
+  m = 0.; msq = 0.;
+  for(i=0; i < n; i++) {
+    double p = phenotypes[i];
+
+    for(j=0; j < n_covariates; j++)
+      /* covariates (X0 below) is column major format in this version, but I 
+         see commented out code below for row major format */
+      p -= betas[j]*covariates[i + j*n];
+    
+    m += p;
+    msq += p*p;
+  }
+
+  m /= n;
+  return msq/n - m*m;
+}
+
 int main(int argc, char** argv) {
   int i, j, k, l, n, nf, q0, q, ngrids, ndigits, istart, iend, nelems, nmiss, *wids, c;
   char *kinf, *phenof, *tpedf, *covf, *outf, *inf, *delims, *lbuf;
@@ -421,7 +465,7 @@ int main(int argc, char** argv) {
     }
     
     // subselect X0 from covs
-    X0 = (double*) malloc(sizeof(double) * q0 * nf);
+    X0 = (double*) malloc(sizeof(double) * (q0+1) * nf);
     for(k=0; k < nf; ++k) {
       for(l=0; l < q0; ++l) {
 	// X0[k*q0+l] = covs[wids[k]*q0+l]; // RowMajor
@@ -437,6 +481,14 @@ int main(int argc, char** argv) {
       }
     }
   }
+
+  /* Koni - 2014-07-02 
+
+     Added this to have the phenotype total variance in order to calculate 
+     how much of the variance is explained by a marker during marker by marker
+     tests */
+  double phenotype_mean, phenotype_var;
+  compute_phenotype_summary_stats(&phenotype_mean, &phenotype_var, y, nf);
 
   cend = clock();
   emmax_log("File reading - elapsed CPU time is %.6lf\n",((double)(cend-cstart))/CLOCKS_PER_SEC);
@@ -454,7 +506,7 @@ int main(int argc, char** argv) {
     //fprintf(stderr,"%d %d\n",nf,q0);
     // compute eigen_R and eigen_L
     eigen_R_wo_Z(nf, q0, K, X0, eRvals, eRvecs);
-    emmax_log("eRvals[0] = %lf, eRvals[n-q-1] = %lf, eRvals[n-q] = %lf",eRvals[0],eRvals[nf-q0-1],eRvals[nf-q0]);
+    emmax_log("eRvals[0] = %lf, eRvals[n-q-1] = %lf, eRvals[n-q] = %lf",eRvals[0],eRvals[nf-q0-2],eRvals[nf-q0-1]);
 
     cend = clock();
     emmax_log("eigen_R - elapsed CPU time is %.6lf",((double)(cend-cstart))/CLOCKS_PER_SEC);
@@ -629,25 +681,25 @@ int main(int argc, char** argv) {
       }
 
       // resolve missing values using mean
-      if ( nmiss > 0 ) {
-	sum = 0.;
-	nmiss = 0;
-	for(j=0; j < nf; ++j) {
-	  if ( x1[j] != DBL_MISSING ) {
-	    sum += x1[j];
-	  }
-	  else {
-	    ++nmiss;
-	  }
+      sum = 0.;
+      nmiss = 0;
+      for(j=0; j < nf; ++j) {
+	if ( x1[j] != DBL_MISSING ) {
+	  sum += x1[j];
 	}
-	
-	for(j=0; j < nf; ++j) {
-	  if ( x1[j] == DBL_MISSING ) {
-	    x1[j] = sum/(double)(nf-nmiss);
-	    //fprintf(stderr,"%d %.5lf\n",j,x1[j]);
-	  }
+	else {
+	  ++nmiss;
 	}
       }
+
+      for(j=0; j < nf; ++j) {
+	if ( x1[j] == DBL_MISSING ) {
+	  x1[j] = sum/(double)(nf-nmiss);
+	  //fprintf(stderr,"%d %.5lf\n",j,x1[j]);
+	}
+      }
+      double allele_freq = sum/((nf - nmiss)*2.);
+
       /*
       for(j=0; j < nf; ++j) {
 	fprintf(stderr," %.5lf",x1[j]);
@@ -690,9 +742,34 @@ int main(int argc, char** argv) {
       clapend = clock();
       sum2 += (clapend-clapstart);
 
+      
+      double phenotype_var = 
+	compute_regressed_phenotype_variance(y, nf, betas, X0, q0);
+
+      /* Koni - 2014-07-02 
+
+	 Attempt at a cheap way to describe the percent of phenotypic variance
+	 explained by this marker. Under the simple additive quantitative
+	 genetic model, Vm = 2pq*(a + d*(q - p))^2, where Vm means genetic
+	 variance for this marker, p is the '1' allele frequency and q = 1 - p,
+	 -a is the deviation from the mean for an '00' genotype and +a is the
+	 deviation from the mean for a '11' genotype, d the deviation from the
+	 mean for a '01' or '10' genotype (a heterozygote). 
+
+	 EMMAX assumes no dominance deviation (d = 0), and the genotype 
+	 encoding is 0, 1, 2 rather than -1, 0, 1, so 'a' is actually 
+	 beta[q0]/2. Some 2s cancel below but it is spelled out for clarity */
+
+      double percent_variance_explained;// =
+	/*	(1. - compute_regressed_phenotype_variance(y, nf, betas, X0, q0)/
+		phenotype_var) * 100.;*/
+      percent_variance_explained = 2.*allele_freq*(1 - allele_freq)*
+	(betas[q0]/2.*betas[q0]/2.)/phenotype_var*100.;
+
       fprintf(outh.fp,"%s\t",tped_headers[isnpid]);
       fprintf(outh.fp,"%-.*lg\t",ndigits,betas[q0]);
-      fprintf(outh.fp,"%-.*lg\n",ndigits,p);
+      fprintf(outh.fp,"%-.*lg\t",ndigits,p);
+      fprintf(outh.fp,"%1.3f\n", percent_variance_explained);
 
       //memset(snps, 0, sizeof(double)*n);
       nmiss = 0;
