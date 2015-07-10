@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <errno.h>
+
+#include "kmacros.h"
+
 #include <math.h>
 #include <unistd.h>
 #include <float.h>
@@ -152,6 +156,81 @@ static double compute_regressed_phenotype_variance(double *phenotypes,
   return msq/n - m*m;
 }
 
+static double *load_covariate_marker(int n_indv, char *tped_basename, char *covariate_snpid) {
+  char *tped_fname;
+  char *inputbuf, *p, *q1, *q2, *snp_id;
+  double *covariate_genotypes;
+  FILE *f;
+  int n;
+  
+  tped_fname = (char *) malloc(sizeof(char)*(strlen(tped_basename) + 10));
+  sprintf(tped_fname,"%s.tped", tped_basename);
+  
+  /* Add code to read gzip'd file */
+  f = fopen(tped_fname, "r");
+  if (f == NULL) {
+    fprintf(stderr,"Can't open input file %s (%s)\n", tped_fname, strerror(errno));
+    exit(-1);
+  }
+
+  inputbuf = (char *) malloc(sizeof(char)*(100*1048576));
+  covariate_genotypes = (double *) malloc(sizeof(double)*n_indv);
+  n = 0;
+  while(fgets(inputbuf, 100*1048576, f) != NULL) {
+    CHOMP(inputbuf);
+    if (inputbuf[0] == 0) continue;
+
+    p = inputbuf;
+    strsep(&p, " \t");
+    snp_id = strsep(&p, " \t");
+    if (strcmp(snp_id, covariate_snpid) != 0) continue;
+
+    strsep(&p, " \t");
+    strsep(&p, " \t");
+    while((q1 = strsep(&p, " \t")) != NULL) {
+      q2 = strsep(&p, " \t");
+
+      if (n >= n_indv) {
+	fprintf(stderr,"Error: expecting %d individuals for covariate SNP %s but found more\n",
+		n_indv, covariate_snpid);
+      }
+
+      if (q1[0] == '0' || q2[0] == '0') {
+	covariate_genotypes[n] = DBL_MISSING;
+      } else if (q1[0] == '1' && q2[0] == '2' ||
+		 q1[0] == '2' && q2[0] == '1') {
+	covariate_genotypes[n] = 0;
+      } else if (q1[0] == '1' && q2[0] == '1') {
+	covariate_genotypes[n] == -1;
+      } else if (q1[0] == '2' && q2[0] == '2') {
+	covariate_genotypes[n] == 1;
+      } else {
+	fprintf(stderr,"Covariate genotype %s/%s for SNP %s at individual %d not understood\n",
+		q1, q2, covariate_snpid, n);
+	covariate_genotypes[n] == DBL_MISSING;
+      }
+      n++;
+    
+    }
+    
+    if (n < n_indv) {
+      fprintf(stderr,"Error: expecting %d individuals for covariate SNP %s but found %d\n",
+	      n_indv, covariate_snpid, n);
+      exit(-1);
+    }
+    break;
+  }
+  fclose(f);
+
+  if (n == 0) {
+    fprintf(stderr,"Error: covariate SNP %s was not found in %s\n", covariate_snpid, tped_fname);
+    exit(-1);
+  }
+  
+  free(tped_fname);
+  return covariate_genotypes;
+}
+      
 int main(int argc, char** argv) {
   int i, j, k, l, n, nf, q0, q, ngrids, ndigits, istart, iend, nelems, nmiss, *wids, c;
   char *kinf, *phenof, *tpedf, *covf, *outf, *inf, *delims, *lbuf;
@@ -162,6 +241,8 @@ int main(int argc, char** argv) {
   struct HFILE phenosh, covsh, kinsh, tpedh, tfamh, eLvalsh, eLvecsh, remlh, outh;
   char **tped_headers, **tfam_headers, **phenos_indids, **covs_indids;
   double maf_threshold = 0.;
+  char *covariate_snpid = NULL;
+  double *covariate_genotypes, *covsnp_x;
   
   cstart = clock();
 
@@ -186,7 +267,7 @@ int main(int argc, char** argv) {
   ndigits = DEFAULT_NDIGITS;
   istart = 0;
   iend = MAX_NUM_MARKERS;
-  while ((c = getopt(argc, argv, "c:d:k:K:S:E:vi:o:p:t:wzD:P:F:ZONm:")) != -1 ) {
+  while ((c = getopt(argc, argv, "c:d:k:K:S:E:vi:o:p:t:wzD:P:F:ZONm:e:")) != -1 ) {
     switch(c) {
     case 'c': // covariates input file
       covf = optarg;
@@ -253,6 +334,12 @@ int main(int argc, char** argv) {
     case 'm' : 
       maf_threshold = strtod(optarg, NULL);
       break;
+      /* KONI - 2015-07-09 - option for specifying a specific marker to use as a fixed
+         effect term in combination with every other marker that is tested. The marker
+	 specified itself will not be tested at all */
+    case 'e':
+      covariate_snpid = optarg;
+      break;
     default:
       fprintf(stderr,"Error : Unknown option character %c",c);
       print_help();
@@ -263,7 +350,7 @@ int main(int argc, char** argv) {
   // Sanity check for the number of required parameters
   if ( argc > optind ) {
     print_help();
-    abort();
+    exit(0);//abort();
   }
 
   if ( phenof == NULL ) {
@@ -488,6 +575,13 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (covariate_snpid != NULL) {
+    covariate_genotypes = load_covariate_marker(n, tpedf, covariate_snpid);
+    covsnp_x = (double *) malloc(sizeof(double)*nf);
+    for(j=0; j < nf; j++)
+      covsnp_x[j] = covariate_genotypes[wids[j]];
+  }
+
   /* Koni - 2014-07-02 
 
      Added this to have the phenotype total variance in order to calculate 
@@ -632,7 +726,7 @@ int main(int argc, char** argv) {
     X0t = (double*) malloc(sizeof(double) * q0 * nf);
     x1 = (double*)malloc(sizeof(double)*nf);  // snp matrix
     x1t = (double*)malloc(sizeof(double)*nf);  // snp matrix
-
+    
     // X0t = t(eLvecs) %*% X0
     //cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, nf, q0, nf, 1.0, eLvecs, nf, X0, nf, 0.0, X0t, nf );
     dgemm(&ct,&cn,&nf,&q0,&nf,&onef,eLvecs,&nf,X0,&nf,&zerof,X0t,&nf);
@@ -720,6 +814,7 @@ int main(int argc, char** argv) {
 	  ++nmiss;
 	}
       }
+      
       /* KONI - 2015-07-09 - Skip if minor allele count is less than an integer value > 1
          specified on command line (-m) */
       if (maf_threshold >= 1.0 && (sum < maf_threshold || (nf - sum) < maf_threshold))
@@ -800,6 +895,12 @@ int main(int argc, char** argv) {
       fprintf(outh.fp,"\t%-.*lg",ndigits,p);
       fprintf(outh.fp,"\t%1.3f", allele_freq);
       fprintf(outh.fp,"\t%1.2f", percent_variance_explained);
+      for(k=0; k < q0; k++) {
+	fprintf(outh.fp,"\t%-.*lg",ndigits,betas[k]);
+	stat = betas[k]/sqrt( iXDX[k*(q0+1) + k]*( yDy - mult_vec_mat_vec( XDy, iXDX, q0+1 ) ) / (nf - q0 - 1));
+	p = tcdf(stat, nf-q0-1);
+	fprintf(outh.fp,"\t%-.*lg", ndigits, p);
+      }
       fprintf(outh.fp,"\n");
       
       //memset(snps, 0, sizeof(double)*n);
