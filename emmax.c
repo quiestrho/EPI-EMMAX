@@ -724,8 +724,13 @@ int main(int argc, char** argv) {
     double *X0t, *x1, *x1t; 
 
     X0t = (double*) malloc(sizeof(double) * q0 * nf);
-    x1 = (double*)malloc(sizeof(double)*nf);  // snp matrix
-    x1t = (double*)malloc(sizeof(double)*nf);  // snp matrix
+    if (covariate_snpid == NULL) {
+      x1 = (double*)malloc(sizeof(double)*nf);  // snp matrix
+      x1t = (double*)malloc(sizeof(double)*nf);  // snp matrix
+    } else {
+      x1 = (double*)malloc(sizeof(double)*nf*2);  // snp matrix
+      x1t = (double*)malloc(sizeof(double)*nf*2);  // snp matrix
+    }
     
     // X0t = t(eLvecs) %*% X0
     //cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, nf, q0, nf, 1.0, eLvecs, nf, X0, nf, 0.0, X0t, nf );
@@ -848,7 +853,7 @@ int main(int argc, char** argv) {
       fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, XDX );
       fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, XDy );
 
-      if ( q0 == 1 ) {
+      if ( 0 && q0 == 1 ) {
 	/*fprintf(stderr,"XDX = %lf %lf %lf %lf\n",XDX[0],XDX[1],XDX[2],XDX[3]);
 	fprintf(stderr,"XDy = %lf %lf\n",XDy[0],XDy[1]);
 	if ( i == 1 ) abort();*/
