@@ -124,7 +124,7 @@ static void compute_phenotype_summary_stats(double *rval_mean,
   m /= n;
   
   *rval_mean = m;
-  *rval_var = msq - m*m;
+  *rval_var = msq/n - m*m;
 }
 
 static double compute_regressed_phenotype_variance(double *phenotypes,
@@ -161,7 +161,8 @@ int main(int argc, char** argv) {
   clock_t cstart, cend, sum0, sum1, sum2, clapstart, clapend;
   struct HFILE phenosh, covsh, kinsh, tpedh, tfamh, eLvalsh, eLvecsh, remlh, outh;
   char **tped_headers, **tfam_headers, **phenos_indids, **covs_indids;
-
+  double maf_threshold = 0.;
+  
   cstart = clock();
 
   sum0 = sum1 = sum2 = 0;
@@ -185,7 +186,7 @@ int main(int argc, char** argv) {
   ndigits = DEFAULT_NDIGITS;
   istart = 0;
   iend = MAX_NUM_MARKERS;
-  while ((c = getopt(argc, argv, "c:d:k:K:S:E:vi:o:p:t:wzD:P:F:ZON")) != -1 ) {
+  while ((c = getopt(argc, argv, "c:d:k:K:S:E:vi:o:p:t:wzD:P:F:ZONm:")) != -1 ) {
     switch(c) {
     case 'c': // covariates input file
       covf = optarg;
@@ -246,6 +247,11 @@ int main(int argc, char** argv) {
       //break;
     case 'N' :
       gls_flag = 0;
+      break;
+      /* KONI - 2015-07-09 - minor allele frequency/count threshold. If < 1.0, treated as a
+	 frequency. If > 1.0, treated as a minimum minor allele count */
+    case 'm' : 
+      maf_threshold = strtod(optarg, NULL);
       break;
     default:
       fprintf(stderr,"Error : Unknown option character %c",c);
@@ -489,6 +495,8 @@ int main(int argc, char** argv) {
      tests */
   double phenotype_mean, phenotype_var;
   compute_phenotype_summary_stats(&phenotype_mean, &phenotype_var, y, nf);
+  fprintf(stderr,"phenotype mean = %1.2f, standard deviation = %1.2f\n",
+	  phenotype_mean, sqrt(phenotype_var));
 
   cend = clock();
   emmax_log("File reading - elapsed CPU time is %.6lf\n",((double)(cend-cstart))/CLOCKS_PER_SEC);
@@ -685,12 +693,17 @@ int main(int argc, char** argv) {
       nmiss = 0;
       for(j=0; j < nf; ++j) {
 	if ( x1[j] != DBL_MISSING ) {
+	  x1[j] -= 1; /* KONI - 2015-07-09 - change to -1, 0, 1 encoding */
 	  sum += x1[j];
 	}
 	else {
 	  ++nmiss;
 	}
       }
+      /* KONI - 2015-07-09 - Skip if minor allele count is less than an integer value > 1
+         specified on command line (-m) */
+      if (maf_threshold >= 1.0 && (sum < maf_threshold || (nf - sum) < maf_threshold))
+	continue;
 
       for(j=0; j < nf; ++j) {
 	if ( x1[j] == DBL_MISSING ) {
@@ -698,8 +711,13 @@ int main(int argc, char** argv) {
 	  //fprintf(stderr,"%d %.5lf\n",j,x1[j]);
 	}
       }
-      double allele_freq = sum/((nf - nmiss)*2.);
 
+      /* KONI - 2015-07-09 - Skip if minor allele frequency is less than a proportion < 1.0 
+	 specified on the command line (-m) */
+      double allele_freq = sum/(nf - nmiss);
+      if (maf_threshold < 1.0 && (allele_freq < maf_threshold || 1.0 - allele_freq < maf_threshold))
+	  continue;
+      
       /*
       for(j=0; j < nf; ++j) {
 	fprintf(stderr," %.5lf",x1[j]);
@@ -743,9 +761,6 @@ int main(int argc, char** argv) {
       sum2 += (clapend-clapstart);
 
       
-      double phenotype_var = 
-	compute_regressed_phenotype_variance(y, nf, betas, X0, q0);
-
       /* Koni - 2014-07-02 
 
 	 Attempt at a cheap way to describe the percent of phenotypic variance
@@ -757,20 +772,18 @@ int main(int argc, char** argv) {
 	 mean for a '01' or '10' genotype (a heterozygote). 
 
 	 EMMAX assumes no dominance deviation (d = 0), and the genotype 
-	 encoding is 0, 1, 2 rather than -1, 0, 1, so 'a' is actually 
-	 beta[q0]/2. Some 2s cancel below but it is spelled out for clarity */
+	 encoding I have switched to -1, 0, 1 above. Originally it was 0, 1, 2 */
 
-      double percent_variance_explained;// =
-	/*	(1. - compute_regressed_phenotype_variance(y, nf, betas, X0, q0)/
-		phenotype_var) * 100.;*/
-      percent_variance_explained = 2.*allele_freq*(1 - allele_freq)*
-	(betas[q0]/2.*betas[q0]/2.)/phenotype_var*100.;
-
-      fprintf(outh.fp,"%s\t",tped_headers[isnpid]);
-      fprintf(outh.fp,"%-.*lg\t",ndigits,betas[q0]);
-      fprintf(outh.fp,"%-.*lg\t",ndigits,p);
-      fprintf(outh.fp,"%1.3f\n", percent_variance_explained);
-
+      double percent_variance_explained = 2.*allele_freq*(1. - allele_freq)*
+	(betas[q0]*betas[q0])/phenotype_var*100.;
+      
+      fprintf(outh.fp,"%s",tped_headers[isnpid]);
+      fprintf(outh.fp,"\t%-.*lg",ndigits,betas[q0]);
+      fprintf(outh.fp,"\t%-.*lg",ndigits,p);
+      fprintf(outh.fp,"\t%1.3f", allele_freq);
+      fprintf(outh.fp,"\t%1.2f", percent_variance_explained);
+      fprintf(outh.fp,"\n");
+      
       //memset(snps, 0, sizeof(double)*n);
       nmiss = 0;
       clapstart = clock();
