@@ -72,6 +72,8 @@ static double onef = 1.0;
 static double zerof = 0.0;
 static double minusonef = -1.0;
 static int onen = 1;
+static int dim_int;
+static int dim_f;
 
 // Input routines
 void close_file (struct HFILE* fhp);
@@ -518,10 +520,11 @@ int main(int argc, char** argv) {
   double optdelta, optvg, optve, REML, REML0, hg;
   double *X0;
   double *y, *yt;
-  double *XDX = (double*)malloc(sizeof(double)*(q0+1)*(q0+1));
-  double *iXDX = (double*)malloc(sizeof(double)*(q0+1)*(q0+1));
-  double *XDy = (double*)malloc(sizeof(double)*(q0+1));
-  double *betas = (double*)malloc(sizeof(double)*(q0+1));
+  int tmp = q0 + (covariate_snpid != NULL ? 2 : 1);
+  double *XDX = (double*)malloc(sizeof(double)*tmp*tmp);
+  double *iXDX = (double*)malloc(sizeof(double)*tmp*tmp);
+  double *XDy = (double*)malloc(sizeof(double)*tmp);
+  double *betas = (double*)malloc(sizeof(double)*tmp);
   double yDy;
 
   // memory allocation
@@ -738,7 +741,7 @@ int main(int argc, char** argv) {
 
     // yt = t(eLvecs) %*% y
     //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, y, 1, 0., yt, 1);
-    dgemv( &ct, &nf, &nf, &onef, eLvecs, &nf, y, &onen, &zerof, yt, &onen);
+    dgemv( &ct,&nf, &nf, &onef, eLvecs, &nf, y, &onen, &zerof, yt, &onen);
     
     outh = open_file_with_suffix(outf,"ps",0,1);
     
@@ -837,7 +840,11 @@ int main(int argc, char** argv) {
       double allele_freq = sum/(nf - nmiss);
       if (maf_threshold < 1.0 && (allele_freq < maf_threshold || 1.0 - allele_freq < maf_threshold))
 	  continue;
-      
+
+      if (covariate_snpid != NULL) {
+	for(;j < nf*2; j++)
+	  x1[j] = covariate_genotypes[wids[j-nf]];
+      }
       /*
       for(j=0; j < nf; ++j) {
 	fprintf(stderr," %.5lf",x1[j]);
@@ -849,7 +856,10 @@ int main(int argc, char** argv) {
 
       clapstart = clock();
       //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, x1, 1, 0., x1t, 1);
-      dgemv(&ct, &nf, &nf, &onef, eLvecs, &nf, x1, &onen, &zerof, x1t, &onen);
+      dim_int = covariate_snpid == NULL ? 1 : 2;
+
+      //    TA   TB   M    N         K    alpha  A            B        Beta    C    
+      dgemm(&ct, &cn, &nf, &dim_int, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
       fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, XDX );
       fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, XDy );
 
