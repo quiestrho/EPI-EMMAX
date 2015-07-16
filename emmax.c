@@ -133,6 +133,13 @@ static void compute_phenotype_summary_stats(double *rval_mean,
   *rval_var = msq/n - m*m;
 }
 
+static void standardize_phenotype(double *phenotypes, int n, double m, double s) {
+  int i;
+  
+  for(i=0; i < n; i++) 
+    phenotypes[i] = (phenotypes[i] - m)/s;
+}
+
 static double compute_regressed_phenotype_variance(double *phenotypes,
 						   int n,
 						   double *betas,
@@ -158,18 +165,126 @@ static double compute_regressed_phenotype_variance(double *phenotypes,
   return msq/n - m*m;
 }
 
+enum { GT_AA = 0, GT_AB, GT_BB, GT_MISSING, N_GT };
+static double genotype_values[N_GT] = { -1.0, 0.0, 1.0, DBL_MISSING };
+
+static int encode_genotype(char *q1, char *q2) {
+  if (q1[0] == '0' || q2[0] == '0') {
+    return GT_MISSING;
+  } else if ((q1[0] == '1' && q2[0] == '2') ||
+		 (q1[0] == '2' && q2[0] == '1')) {
+    return GT_AB;
+  } else if (q1[0] == '1' && q2[0] == '1') {
+    return GT_AA;
+  } else if (q1[0] == '2' && q2[0] == '2') {
+    return GT_BB;
+  } else {
+    fprintf(stderr,"Covariate genotype %s/%s is not understood\n",
+	    q1, q2);
+    return GT_MISSING;
+  }
+}
+
+static double compute_allele_frequency(int *gt, int n) {
+  int i, n_obs;
+  double b_freq;
+
+  b_freq = 0.;
+  n_obs = 0;
+  for(i=0; i < n; i++) {
+    if (gt[i] != GT_MISSING) {
+      n_obs++;
+    
+      if (gt[i] == GT_AB) {
+	b_freq += 0.5;
+      } else if (gt[i] == GT_BB) {
+	b_freq += 1.0;
+      }
+    }
+  }
+
+  b_freq /= n_obs;
+
+  return b_freq;
+}
+
+static void set_genotype_values(double *gv, int *g, int n) {
+  int i, nm;
+  double m;
+
+  nm = 0;
+  m = 0.;
+  for(i=0; i < n; i++) {
+    if (g[i] != GT_MISSING) {
+      gv[i] = genotype_values[ g[i] ];
+      m += gv[i];
+      nm++;
+    }
+  }
+
+  m /= nm;
+  for(i=0; i < n; i++)
+    if (g[i] == GT_MISSING) gv[i] = m;
+}
+
+static void set_interaction_values(double *gi, int *g1, int *g2, int n) {
+  int i;
+
+  for(i=0; i < n; i++) gi[i] = 0;
+  
+  for(i=0; i < n; i++) {
+    if (g1[i] != GT_MISSING || g2[i] != GT_MISSING) {
+      if (g1[i] == GT_AA && g2[i] == GT_AA) {
+	gi[i] = -1.;
+      } else if (g1[i] == GT_AA && g2[i] == GT_BB) {
+	gi[i] = 1.;
+      } else if (g1[i] == GT_BB && g2[i] == GT_AA) {
+	gi[i] = 1.;
+      } else if (g1[i] == GT_BB && g2[i] == GT_BB) {
+	gi[i] = -1.;
+      }
+    }
+  }
+}
+
+static int extract_covariate_snpids(char ***r_ids, char *snpid_list) {
+  char *p, *q, **snp_ids;
+  int n_snps;
+  
+  if (snpid_list == NULL) {
+    *r_ids = NULL;
+    return 0;
+  }
+
+  snp_ids = NULL;
+  n_snps = 0;
+  p = snpid_list;
+  while((q = strsep(&p, ",")) != NULL) {
+    if (n_snps % 8 == 0)
+      snp_ids = realloc(snp_ids, sizeof(char *)*(n_snps + 8));
+
+    snp_ids[n_snps] = strdup(q);
+    n_snps++;
+  }
+
+  *r_ids = snp_ids;
+  return n_snps;
+}
+
+
 /* KONI - 2015-07-10
    10 megabytes max input line. Properly, should be dynamically set based on
    actual input size.
 
    TODO: Implement using gzip'd tped file as the rest of the program does */
 #define INPUT_LINEMAX (10*1048576)
-static double *load_covariate_marker(int n_indv, char *tped_basename, char *covariate_snpid) {
+static int *load_covariate_marker(int n_indv, char *tped_basename,
+				  char *covariate_snpid) {
   char *tped_fname;
   char *inputbuf, *p, *q1, *q2, *snp_id;
-  double *covariate_genotypes, sum;
+  int *covariate_genotypes;
   FILE *f;
-  int i, n, nf;
+  int i, n;
   
   tped_fname = (char *) malloc(sizeof(char)*(strlen(tped_basename) + 10));
   sprintf(tped_fname,"%s.tped", tped_basename);
@@ -182,7 +297,7 @@ static double *load_covariate_marker(int n_indv, char *tped_basename, char *cova
   }
 
   inputbuf = (char *) malloc(sizeof(char)*INPUT_LINEMAX);
-  covariate_genotypes = (double *) malloc(sizeof(double)*n_indv);
+  covariate_genotypes = (int *) malloc(sizeof(int)*n_indv);
   n = 0;
   while(fgets(inputbuf, INPUT_LINEMAX, f) != NULL) {
     CHOMP(inputbuf);
@@ -201,23 +316,8 @@ static double *load_covariate_marker(int n_indv, char *tped_basename, char *cova
 	fprintf(stderr,"Error: expecting %d individuals for covariate SNP %s but found more\n",
 		n_indv, covariate_snpid);
       }
-
-      if (q1[0] == '0' || q2[0] == '0') {
-	covariate_genotypes[n] = DBL_MISSING;
-      } else if ((q1[0] == '1' && q2[0] == '2') ||
-		 (q1[0] == '2' && q2[0] == '1')) {
-	covariate_genotypes[n] = 0.;
-      } else if (q1[0] == '1' && q2[0] == '1') {
-	covariate_genotypes[n] = -1.;
-      } else if (q1[0] == '2' && q2[0] == '2') {
-	covariate_genotypes[n] = 1.;
-      } else {
-	fprintf(stderr,"Covariate genotype %s/%s for SNP %s at individual %d not understood\n",
-		q1, q2, covariate_snpid, n);
-	covariate_genotypes[n] == DBL_MISSING;
-      }
+      covariate_genotypes[n] = encode_genotype(q1, q2);
       n++;
-    
     }
     
     if (n < n_indv) {
@@ -234,17 +334,6 @@ static double *load_covariate_marker(int n_indv, char *tped_basename, char *cova
     exit(-1);
   }
   
-  free(tped_fname);
-  sum = 0.;
-  nf = 0;
-  for(i=0; i < n; i++) {
-    if (covariate_genotypes[i] != DBL_MISSING) sum += covariate_genotypes[i];
-    nf++;
-  }
-  sum /= nf;
-  for(i=0; i < n; i++)
-    if (covariate_genotypes[i] == DBL_MISSING) covariate_genotypes[i] = sum;
-    
   return covariate_genotypes;
 }
 
@@ -261,6 +350,78 @@ static void print_matrix(FILE *f, char *label, double *mat, int n, int m) {
   }
 }
 
+static double calculate_rsq(int *a, int *b, int nf) {
+  double n, p1, p2, x00, x01, x10, x11, D;
+  int i;
+  
+  n = 0.;
+  p1 = 0.;
+  p2 = 0.;
+  x00 = x01 = x10 = x11 = 0.;
+  for(i=0; i < nf; i++) {
+    if (a[i] == GT_MISSING || b[i] == GT_MISSING) continue;
+    if (a[i] == GT_AB && b[i] == GT_AB) continue;
+    if (a[i] == GT_AA && b[i] == GT_AA) {
+      x00+=2;
+    } else if (a[i] == GT_AA && b[i] == GT_AB) {
+      x00++;
+      x01++;
+    } else if (a[i] == GT_AA && b[i] == GT_BB) {
+      x01+=2;
+    } else if (a[i] == GT_AB && b[i] == GT_AA) {
+      x00++;
+      x10++;
+    } else if (a[i] == GT_AB && b[i] == GT_AB) {
+      /* Need EM to resolve this */
+    } else if (a[i] == GT_AB && b[i] == GT_BB) {
+      x01++;
+      x11++;
+    } else if (a[i] == GT_BB && b[i] == GT_AA) {
+      x10+=2;
+    } else if (a[i] == GT_BB && b[i] == GT_AB) {
+      x10++;
+      x11++;
+    } else if (a[i] == GT_BB && b[i] == GT_BB) {
+      x11+=2;
+    }
+    n+=2;
+  }
+  p1 = (x00 + x01)/n;
+  p2 = (x00 + x10)/n;
+  x00 /= n;
+  x01 /= n;
+  x10 /= n;
+  x11 /= n;
+  D = x00 - p1*p2;
+  return (D*D/(p1*(1.-p1)*p2*(1.-p2)));
+}
+
+static void print_output_header(FILE *f, char **covariate_snpids, int n_covariate_snps,
+				int do_genetic_interaction_tests,
+				int n_file_covariates) {
+  int k;
+  
+  /* The simplest part, the tested marker in the scan */
+  fprintf(f,"Test marker\tchm\tpos\tPVE(model)\tb1\tp-value\tallele_freq\tPVE");
+
+  for(k=0; k < n_covariate_snps; k++) {
+    fprintf(f,"\t%s\tp-value\trsq\tPVE", covariate_snpids[k]);
+  }
+  if (do_genetic_interaction_tests) {
+    for(k=0; k < n_covariate_snps; k++) {
+      fprintf(f,"\tI(%s)\tp-value", covariate_snpids[k]);
+    }
+  }
+
+  /* Fixed covariates provided as seperate input file. Would normally contain
+     the intercept term as the first column */
+  fprintf(f,"\tintercept\tp-value");
+  for(k=1; k < n_file_covariates; k++)
+    fprintf(f,"\t(cov %d)\tp-value", k);
+
+  fprintf(f,"\n");
+}
+
 int main(int argc, char** argv) {
   int i, j, k, l, n, nf, q0, q, ngrids, ndigits, istart, iend, nelems, nmiss, *wids, c;
   char *kinf, *phenof, *tpedf, *covf, *outf, *inf, *delims, *lbuf;
@@ -271,8 +432,13 @@ int main(int argc, char** argv) {
   struct HFILE phenosh, covsh, kinsh, tpedh, tfamh, eLvalsh, eLvecsh, remlh, outh;
   char **tped_headers, **tfam_headers, **phenos_indids, **covs_indids;
   double maf_threshold = 0.;
-  char *covariate_snpid = NULL;
-  double *covariate_genotypes, *covsnp_x;
+  char *covariate_snplist = NULL;
+  char **covariate_snpids;
+  int n_covariate_snps;
+  int **covariate_genotypes;
+  double **covariate_values;
+  double *covariate_afreq;
+  double *rsq;
   int do_genetic_interaction_tests = 0;
   
   cstart = clock();
@@ -369,7 +535,7 @@ int main(int argc, char** argv) {
          effect term in combination with every other marker that is tested. The marker
 	 specified itself will not be tested at all */
     case 'e':
-      covariate_snpid = optarg;
+      covariate_snplist = optarg;
       break;
       /* KONI - 2015-07-10 - option for performing GxG interaction tests when a 
          covariate SNP is specified. */
@@ -389,6 +555,8 @@ int main(int argc, char** argv) {
     exit(0);//abort();
   }
 
+  n_covariate_snps = extract_covariate_snpids(&covariate_snpids, covariate_snplist);
+  
   if ( phenof == NULL ) {
     print_help();
     emmax_error("Phenotype file must be specified\n");
@@ -554,14 +722,14 @@ int main(int argc, char** argv) {
   double optdelta, optvg, optve, REML, REML0, hg;
   double *X0;
   double *y, *yt;
-  int n_genetic_effects = covariate_snpid != NULL ? 2 : 1;
+  int n_genetic_effects = 1 + n_covariate_snps + (do_genetic_interaction_tests ? n_covariate_snps : 0);
   int tmp = q0 + n_genetic_effects;
   double *XDX = (double*)malloc(sizeof(double)*tmp*tmp);
   double *iXDX = (double*)malloc(sizeof(double)*tmp*tmp);
   double *XDy = (double*)malloc(sizeof(double)*tmp);
   double *betas = (double*)malloc(sizeof(double)*tmp);
   double yDy;
-
+  
   // memory allocation
   y = (double*)malloc(sizeof(double)*n);
   yt = (double*)malloc(sizeof(double)*n);
@@ -613,15 +781,23 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (covariate_snpid != NULL) {
-    covariate_genotypes = load_covariate_marker(n, tpedf, covariate_snpid);
-    //    print_matrix(stderr,"covariate snp",covariate_genotypes,n,1);
-    covsnp_x = (double *) malloc(sizeof(double)*nf);
-    for(j=0; j < nf; j++)
-      covsnp_x[j] = covariate_genotypes[wids[j]];
-    // print_matrix(stderr,"covariate snp",covsnp_x,nf,1);
+  /* KONI - this code should be moved to load_covariate_marker */
+  if (n_covariate_snps > 0) {
+    covariate_genotypes = (int **) malloc(sizeof(int *)*n_covariate_snps);
+    covariate_values = (double **) malloc(sizeof(double *)*n_covariate_snps);
+    rsq = (double *) malloc(sizeof(double)*n_covariate_snps);
+    covariate_afreq = (double *) malloc(sizeof(double)*n_covariate_snps);
+    for(i=0; i < n_covariate_snps; i++) {
+      covariate_genotypes[i] = load_covariate_marker(n, tpedf, covariate_snpids[i]);
+      covariate_afreq[i] = compute_allele_frequency(covariate_genotypes[i], n);
+      covariate_values[i] = (double *) malloc(sizeof(double)*n);
+      set_genotype_values(covariate_values[i], covariate_genotypes[i], n);
+    }
+  } else {
+    covariate_genotypes = NULL;
+    covariate_values    = NULL;
   }
-
+  
   /* Koni - 2014-07-02 
 
      Added this to have the phenotype total variance in order to calculate 
@@ -631,7 +807,8 @@ int main(int argc, char** argv) {
   compute_phenotype_summary_stats(&phenotype_mean, &phenotype_var, y, nf);
   fprintf(stderr,"phenotype mean = %1.2f, standard deviation = %1.2f\n",
 	  phenotype_mean, sqrt(phenotype_var));
-
+  //standardize_phenotype(y, nf, phenotype_mean, sqrt(phenotype_var));
+  
   cend = clock();
   emmax_log("File reading - elapsed CPU time is %.6lf\n",((double)(cend-cstart))/CLOCKS_PER_SEC);
   cstart = cend;
@@ -807,9 +984,21 @@ int main(int argc, char** argv) {
     clapstart = clock();
 
     fprintf(stderr,"Starting marker tests...\n");
+    print_output_header(outh.fp, covariate_snpids, n_covariate_snps, do_genetic_interaction_tests, q0);
+    double *gv = (double *) malloc(sizeof(double)*n);
+    int *genotypes = (int *) malloc(sizeof(int)*n);
+    double **interactions = (double **) malloc(sizeof(double)*n_covariate_snps);
+    for(k=0; k < n_covariate_snps; k++)
+      interactions[k] = (double *) malloc(sizeof(double)*n);
+
+    /* genome scan loop */
     for(i=istart; (i < iend) && ( tokenize_line_with_col_headers( &tpedh, tped_nheadercols, delims, zero_miss_flag, lbuf, snps, tped_headers, &nelems, &nmiss) != NULL ); ++i) {
-      if (covariate_snpid != NULL && strcmp(covariate_snpid, tped_headers[isnpid]) == 0)
-	continue;
+
+      /* Do not analyze a SNP as a genome scan marker if it is also one of the
+	 covariate SNPs */
+      for(k=0; k < n_covariate_snps; k++)
+	if (strcmp(tped_headers[isnpid], covariate_snpids[k]) == 0) break;
+      if (n_covariate_snps > 0 && k < n_covariate_snps) continue;
       
       clapend = clock();
       sum0 += (clapend-clapstart);
@@ -822,47 +1011,37 @@ int main(int argc, char** argv) {
 	emmax_error("The SNP file %s.tped do not have the adequate number of columns at line %d - (%d vs %d)\n", tpedf, i, nelems, n);
       }
 
-      for(j=0; j < nf; ++j) {
-	x1[j] = snps[wids[j]];
-      }
-
-      // resolve missing values using mean
-      if ( nmiss > 0 ) {
-	sum = 0.;
-	nmiss = 0;
-	for(j=0; j < nf; ++j) {
-	  if ( x1[j] != DBL_MISSING ) {
-	    sum += x1[j];
-	  }
-	  else {
-	    ++nmiss;
-	  }
-	}
-	
-	for(j=0; j < nf; ++j) {
-	  if ( x1[j] == DBL_MISSING ) {
-	    x1[j] = sum/(double)(nf-nmiss);
-	    //fprintf(stderr,"%d %.5lf\n",j,x1[j]);
-	  }
+      /* This nonsense is trying to stay compatible with the tokenize_line... () function
+	 call in the loop gaurd above. It is difficult to modify that function to use
+	 the genotype enum codes because it has a dual purpose for reading a matrix of
+	 floating point numbers as well. Really, a whole different file reading interface
+	 needs to be written to free us from that. What I want though is to have genotypes
+	 consistent between the covariate SNP[s] and the scan SNP so I can check for LD,
+	 and also so that I can change the decimal encoding of the variable, for whatever
+	 reason in ONE PLACE. Fortunately the function as is returns values (but in doubles)
+	 as 0, 1, 2, DBL_MISSING as is, so I just convert that to ints and hold my nose */
+      for(j=0; j < n; j++) {
+	if (snps[j] != DBL_MISSING) {
+	  genotypes[j] = (int) snps[j];
+	} else {
+	  genotypes[j] = GT_MISSING;
 	}
       }
-
-      sum = 0.;
-      nmiss = 0;
-      for(j=0; j < nf; ++j) {
-	if ( x1[j] != DBL_MISSING ) {
-	  x1[j] -= 1; /* KONI - 2015-07-09 - change to -1, 0, 1 encoding */
-	  sum += x1[j];
-	}
-	else {
-	  ++nmiss;
-	}
-      }
+      double allele_freq = compute_allele_frequency(genotypes, n);
+      set_genotype_values(gv, genotypes, n);
+      for(j=0; j < nf; ++j)
+      	x1[j] = gv[wids[j]];
       
       /* KONI - 2015-07-09 - Skip if minor allele count is less than an integer value > 1
          specified on command line (-m) */
-      if (maf_threshold >= 1.0 && (sum < maf_threshold || (nf - sum) < maf_threshold))
-	continue;
+      if (maf_threshold >= 1.0 && (allele_freq*nf < maf_threshold ||
+      				   nf*(1 - allele_freq) < maf_threshold))
+	      continue;
+
+      /* KONI - 2015-07-09 - Skip if minor allele frequency is less than a proportion < 1.0 
+	 specified on the command line (-m) */
+      if (maf_threshold < 1.0 && (allele_freq < maf_threshold || 1.0 - allele_freq < maf_threshold))
+      	  continue;
 
       for(j=0; j < nf; ++j) {
 	if ( x1[j] == DBL_MISSING ) {
@@ -871,19 +1050,20 @@ int main(int argc, char** argv) {
 	}
       }
 
-      /* KONI - 2015-07-09 - Skip if minor allele frequency is less than a proportion < 1.0 
-	 specified on the command line (-m) */
-      double allele_freq = sum/(nf - nmiss);
-      if (maf_threshold < 1.0 && (allele_freq < maf_threshold || 1.0 - allele_freq < maf_threshold))
-	  continue;
-
-      if (covariate_snpid != NULL) {
-	for(;j < nf*2; j++)
-	  //x1[j] = 0.;
-	  x1[j] = covsnp_x[j-nf];
+      for(k=0; k < n_covariate_snps; k++) {
+	rsq[k] = calculate_rsq(genotypes, covariate_genotypes[k], n);
+	for(j=0; j < nf; j++) x1[j+(k+1)*nf] = covariate_values[k][wids[j]];
       }
 
-      //      print_matrix(stderr, "x1 matrix", x1, nf, n_genetic_effects);
+      if (do_genetic_interaction_tests) {
+	for(k=0; k < n_covariate_snps; k++) {
+	  set_interaction_values(interactions[k], genotypes, covariate_genotypes[k], n);
+	  for(j=0; j < nf; j++)
+	    x1[j + (k+n_covariate_snps+1)*nf] = interactions[k][wids[j]];
+	}
+      }
+      //if (strcmp(tped_headers[isnpid],"SNP-2.9210912.") == 0) 
+      //print_matrix(stderr, "x1 matrix", x1, nf, n_genetic_effects);
       
       //fprintf(stderr,"\n%lf\t%d\t%d\n",sum,nf,nmiss);*/
       //if ( i == 1 ) abort();
@@ -916,7 +1096,10 @@ int main(int argc, char** argv) {
 	q = q0+n_genetic_effects;
 	dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
       }
-      stat = betas[q0]/sqrt( iXDX[q0*(q0+n_genetic_effects)+q0]*( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) / ( nf - q0 - n_genetic_effects ) );
+      double residual_var = (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
+	(nf - q0 - n_genetic_effects);
+
+      stat = betas[q0]/sqrt( iXDX[q0*(q0+n_genetic_effects)+q0] * residual_var );
       clapend = clock();
       sum1 += (clapend-clapstart);
 
@@ -939,14 +1122,57 @@ int main(int argc, char** argv) {
 	 encoding I have switched to -1, 0, 1 above. Originally it was 0, 1, 2 */
       double percent_variance_explained = 2.*allele_freq*(1. - allele_freq)*
 	(betas[q0]*betas[q0])/phenotype_var*100.;
-      
+
+      /* Output the SNP id, chomosome, and position of the scan marker for 
+	 this model */
       fprintf(outh.fp,"%s",tped_headers[isnpid]);
+      fprintf(outh.fp,"\t%s",tped_headers[0]);
+      fprintf(outh.fp,"\t%s",tped_headers[3]);
+
+      /* Output the percent variance explained of the whole model */
+      fprintf(outh.fp,"\t%1.1f", (1. - residual_var/phenotype_var)*100.);
+      
+      /* Output the beta, p-value, allele frequency, and PVE for the scan marker */
       fprintf(outh.fp,"\t%-.*lg",ndigits,betas[q0]);
       fprintf(outh.fp,"\t%-.*lg",ndigits,p);
       fprintf(outh.fp,"\t%1.3f", allele_freq);
       fprintf(outh.fp,"\t%1.2f", percent_variance_explained);
+
+      /* Output terms for covariate SNPs that were modeled along with the scan marker */
+      for(k=0; k < n_covariate_snps; k++) {
+	fprintf(outh.fp,"\t%-.*lg",ndigits,betas[q0+k+1]);
+	stat = betas[q0+k+1]/
+	  sqrt( iXDX[(q0+k+1)*(q0+n_genetic_effects)+q0+k+1]*
+		( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) /
+		( nf - q0 - n_genetic_effects ) );
+	p = tcdf(stat, nf-q0-n_genetic_effects);
+	
+	fprintf(outh.fp,"\t%-.*lg", ndigits, p);
+	fprintf(outh.fp,"\t%1.3f", rsq[k]);
+	percent_variance_explained = 2*covariate_afreq[k]*(1. - covariate_afreq[k])*
+	  (betas[q0+k+1]*betas[q0+k+1])/phenotype_var*100.;
+	fprintf(outh.fp,"\t%1.3f", percent_variance_explained);
+      }
+
+      /* If genetic interaction terms were modeled, output their betas and p-values */
+      if (do_genetic_interaction_tests) {
+	for(k=0; k < n_covariate_snps; k++) {
+	  int col = q0 + n_covariate_snps +1 + k;
+	  int df = nf - q0 - n_genetic_effects;
+	    
+	  fprintf(outh.fp,"\t%-.*lg",ndigits,betas[col]);
+	  stat = betas[col]/
+	    sqrt( iXDX[(col)*(q0+n_genetic_effects)+col]*
+		  ( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) / df );
+	  p = tcdf(stat, df);
+	  fprintf(outh.fp,"\t%-.*lg", ndigits, p);
+	}
+      }
+
+      /* Output external covariate terms, including intercept, in columns following the
+	 genetic effects above */
       for(k=0; k < q0; k++) {
-	fprintf(outh.fp,"\t%-.*lg",ndigits,betas[k]);
+	fprintf(outh.fp,"\t%-.*lg",ndigits,betas[k]);	
 	stat = betas[k]/sqrt( iXDX[k*(q0+n_genetic_effects) + k]*( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) / (nf - q0 - n_genetic_effects));
 	p = tcdf(stat, nf-q0-n_genetic_effects);
 	fprintf(outh.fp,"\t%-.*lg", ndigits, p);
@@ -1474,33 +1700,45 @@ void fill_XDX_X0 ( double* X0, double* eLvals, double delta, int n, int q0, int 
   }
 }
 
+static int double_compare(const void *c, const void *d) {
+  const double *a = (const double *) c;
+  const double *b = (const double *) d;
+  if (a < b) return -1;
+  if (a > b) return  1;
+  return 0;
+}
+
 // fill X1-dependent part for computing 
 // XDX = t(X) %*% D %*% X
 // where X = [X0 x1], dim(X0) = (n,q), dim(x1) = (n,1)
 void fill_XDX_X1 ( double* X0, double* x1, double* eLvals, double delta, int n, int q0, int m,
 		   double* XDX ) {
   int i, j, k;
-  double tmp;
+  double tmp[n];
 
   for(k=0; k < m; k++) {
     for(i=0; i < q0; ++i) {
-      tmp = 0;
       for(j=0; j < n; ++j) {
-	tmp += ((X0[j+i*n]*x1[j + k*n])/(eLvals[j]+delta));
+	tmp[j] = ((X0[j+i*n]*x1[j + k*n])/(eLvals[j]+delta));
       }
-      XDX[i+(q0+m)*(q0+k)] = tmp; // fill the last column vector - XDX[i,q0]
-      XDX[(q0+k)+(q0+m)*i] = tmp; // fill the last row vector - XDX[q0,i]
+      qsort(tmp, n, sizeof(double), double_compare);
+      for(j=1; j < n; j++) tmp[0] += tmp[j];
+
+      XDX[i+(q0+m)*(q0+k)] = tmp[0]; // fill the last column vector - XDX[i,q0]
+      XDX[(q0+k)+(q0+m)*i] = tmp[0]; // fill the last row vector - XDX[q0,i]
     }
   }
 
   for(i=0; i < m; i++) {
     for(j=0; j <= i; j++) {
-      tmp = 0;
       for(k=0; k < n; k++) 
-	tmp += x1[k + i*n]*x1[k + j*n]/(eLvals[k]+delta);
-
-      XDX[i+q0+(q0+m)*(q0+j)] = tmp;
-      XDX[j+q0+(q0+m)*(q0+i)] = tmp;
+	tmp[k] = x1[k + i*n]*x1[k + j*n]/(eLvals[k]+delta);
+      qsort(tmp, n, sizeof(double), double_compare);
+      for(k=1; k < n; k++)
+	tmp[0] += tmp[k];
+      
+      XDX[i+q0+(q0+m)*(q0+j)] = tmp[0];
+      XDX[j+q0+(q0+m)*(q0+i)] = tmp[0];
     }
   }
   
@@ -1511,14 +1749,15 @@ void fill_XDX_X1 ( double* X0, double* x1, double* eLvals, double delta, int n, 
 // where X = [X0 x1], dim(X0) = (n,q), dim(x1) = (n,1), dim(y) = (n,1)
 void fill_XDy_X0 ( double* X0, double* y, double* eLvals, double delta, int n, int q0, double* XDy ) {
   int i, j;
-  double tmp;
+  double tmp[n];
 
   for(i=0; i < q0; ++i) {
-    tmp = 0;
     for(j=0; j < n; ++j) {
-      tmp += ((X0[j+n*i]*y[j])/(eLvals[j]+delta));
+      tmp[j]= ((X0[j+n*i]*y[j])/(eLvals[j]+delta));
     }
-    XDy[i] = tmp;
+    qsort(tmp, n, sizeof(double), double_compare);
+    for(j=1; j < n; j++) tmp[0] += tmp[j];
+    XDy[i] = tmp[0];
   }
 }
 
@@ -1528,38 +1767,57 @@ void fill_XDy_X0 ( double* X0, double* y, double* eLvals, double delta, int n, i
 void fill_XDy_X1 ( double* x1, double* y, double* eLvals, double delta, int n, int q0, int m,
 		   double* XDy ) {
   int i, k;
-  double tmp;
+  double tmp[n];
 
   for(k=0; k < m; k++) {
-    tmp = 0;
     for(i=0; i < n; ++i) {
-      tmp += ((x1[i+(n*k)]*y[i])/(eLvals[i]+delta));
+      tmp[i] = ((x1[i+(n*k)]*y[i])/(eLvals[i]+delta));
     }
-    XDy[q0+k] = tmp;
+    qsort(tmp, n, sizeof(double), double_compare);
+    for(i=1; i < n; i++) tmp[0] += tmp[i];
+    XDy[q0+k] = tmp[0];
   }
 }
 
 // compute yDy = t(y) %*% D %*% y and return it
 double compute_yDy ( double* y, double *eLvals, double delta, int n ) {
   int i;
-  double tmp = 0;
+  double tmp[n];
+  
   for(i=0; i < n; ++i ) {
-    tmp += ((y[i]*y[i])/(eLvals[i]+delta));
+    tmp[i] = ((y[i]*y[i])/(eLvals[i]+delta));
   }
-  return tmp;
+  qsort(tmp, n, sizeof(double), double_compare);
+  for(i=1; i < n; i++)
+    tmp[0] += tmp[i];
+  
+  return tmp[0];
 }
 
 // compute t(vec) %*% mat %*% vec 
 // for a general bector and symmetric matrix vec and mat
 double mult_vec_mat_vec ( double* vec, double* mat, int n ) {
   int i, j;
-  double tmp = 0;
+  double tmp1[n];
+  double tmp2[n];
+  
   for(i=0; i < n; ++i) {
+    
     for(j=0; j < n; ++j) {
-      tmp += (vec[i]*vec[j]*mat[i+j*n]);
+      tmp2[j] = (vec[i]*vec[j]*mat[i+j*n]);
     }
+    qsort(tmp2, n, sizeof(double), double_compare);
+    for(j=1; j < n; j++)
+      tmp2[0] += tmp2[j];
+    
+    tmp1[i] = tmp2[0];
   }
-  return tmp;
+  
+  qsort(tmp1, n, sizeof(double), double_compare);
+  for(i=1; i < n; i++)
+    tmp1[0] += tmp1[i];
+  
+  return tmp1[0];
 }
 
 // read_matrix_with_col_headers()
@@ -1709,7 +1967,7 @@ double* tokenize_line_with_col_headers( struct HFILE* fhp, int nheadercols, char
   }
   //fprintf(stderr,"tokenize-line ended %d %d\n",j,nheadercols);
   *p_nvalues = (zero_miss_flag == 1 ) ? (j-nheadercols)/2 : (j-nheadercols);
-  *p_nmiss += nmiss;
+  *p_nmiss = nmiss;
   ++(fhp->nrows);
 
   if ( j < nheadercols ) {
@@ -2009,8 +2267,9 @@ int matrix_invert(int n, double *X, double *Y) {
   if (X!=Y) vector_copy(n*n, X, Y);
   
   /*  We need to store the pivot matrix obtained by the LU factorisation  */
-  int *ipiv;
-  ipiv=malloc(n*sizeof(int));
+  //int *ipiv;
+  int ipiv[n];
+  //  ipiv=malloc(n*sizeof(int));
   if (ipiv==NULL) {
     printf("malloc failed in matrix_invert\n"); 
     return 2;
@@ -2024,14 +2283,15 @@ int matrix_invert(int n, double *X, double *Y) {
   if (info!=0) return info;
   
   int lwork = n*16;
-  double* work = malloc(sizeof(double)*lwork);
+  double work[lwork];
+  //  double* work = malloc(sizeof(double)*lwork);
   /*  Feed this to the lapack inversion routine.  */
   //info = clapack_dgetri (CblasColMajor, n, Y, n, ipiv);
   dgetri(&n,Y,&n,ipiv,work,&lwork,&info);
   
   /*  Cleanup and exit  */
-  free(ipiv);
-  free(work);
+  //  free(ipiv);
+  //  free(work);
   return info;
 }
 
