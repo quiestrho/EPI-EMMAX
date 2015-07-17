@@ -402,7 +402,7 @@ static void print_output_header(FILE *f, char **covariate_snpids, int n_covariat
   int k;
   
   /* The simplest part, the tested marker in the scan */
-  fprintf(f,"Test marker\tchm\tpos\tPVE(model)\tb1\tp-value\tallele_freq\tPVE");
+  fprintf(f,"Test marker\tchm\tpos\tPVE(model)\tPVE(genetic)\teffect(scan)\tp-value\tallele_freq\tPVE");
 
   for(k=0; k < n_covariate_snps; k++) {
     fprintf(f,"\t%s\tp-value\trsq\tPVE", covariate_snpids[k]);
@@ -991,6 +991,36 @@ int main(int argc, char** argv) {
     for(k=0; k < n_covariate_snps; k++)
       interactions[k] = (double *) malloc(sizeof(double)*n);
 
+    /* get a base variance with no genetic effects. This is crude, we are going to substitue
+       random values for the genetic terms of the model, solve it, and recover the variance
+       explained. That variance is just that which is explained by the kinship matrix and
+       any fixed covariate terms supplied as a file that are not genetic terms as per those
+       specified on the command line, a genome scan marker, or any interaction term. */
+    srand(time(NULL));
+    int trial;
+    double null_model_residual_var = 0.;
+    for(trial=0; trial < 1000; trial++) {
+      for(k=0; k < n_genetic_effects; k++) {
+	for(j=0; j < nf; j++) {
+	  double r = rand()/(RAND_MAX + 1.0) < 0.5;
+	  x1[j + nf*k] = r < 0.5 ? 0. : ( r < 0.25 ? -1. : 1.);
+	}
+      }
+      dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
+      fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, n_genetic_effects, XDX );
+      fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, n_genetic_effects, XDy );
+      matrix_invert( q0+n_genetic_effects, XDX, iXDX );
+      q = q0+n_genetic_effects;
+      //cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+      dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
+
+      null_model_residual_var += (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
+	(nf - q0 - n_genetic_effects);
+    }
+    null_model_residual_var /= trial;
+    fprintf(stderr,"Residual variance with no fixed genetic effects is %1.3f, total phenotype var %1.3f\n",
+	    null_model_residual_var, phenotype_var);
+    
     /* genome scan loop */
     for(i=istart; (i < iend) && ( tokenize_line_with_col_headers( &tpedh, tped_nheadercols, delims, zero_miss_flag, lbuf, snps, tped_headers, &nelems, &nmiss) != NULL ); ++i) {
 
@@ -1062,40 +1092,21 @@ int main(int argc, char** argv) {
 	    x1[j + (k+n_covariate_snps+1)*nf] = interactions[k][wids[j]];
 	}
       }
-      //if (strcmp(tped_headers[isnpid],"SNP-2.9210912.") == 0) 
-      //print_matrix(stderr, "x1 matrix", x1, nf, n_genetic_effects);
-      
-      //fprintf(stderr,"\n%lf\t%d\t%d\n",sum,nf,nmiss);*/
-      //if ( i == 1 ) abort();
-      
-      // x1t = t(eLvecs) %*% x1
 
       clapstart = clock();
+      // x1t = t(eLvecs) %*% x1
       //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, x1, 1, 0., x1t, 1);
-
       //    Ta   TB   M    N         K    alpha  A            B        Beta    C    
       dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
       fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, n_genetic_effects, XDX );
       fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, n_genetic_effects, XDy );
 
-      if ( 0 && q0 == 1 ) {
-	/*fprintf(stderr,"XDX = %lf %lf %lf %lf\n",XDX[0],XDX[1],XDX[2],XDX[3]);
-	fprintf(stderr,"XDy = %lf %lf\n",XDy[0],XDy[1]);
-	if ( i == 1 ) abort();*/
+    
+      matrix_invert( q0+n_genetic_effects, XDX, iXDX );
+      q = q0+n_genetic_effects;
+      //cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+      dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
 
-	double denom = XDX[0]*XDX[3]-XDX[1]*XDX[2];
-	iXDX[0] = XDX[3]/denom;
-	iXDX[1] = 0-XDX[1]/denom;
-	iXDX[2] = 0-XDX[2]/denom;
-	iXDX[3] = XDX[0]/denom;
-	betas[1] = iXDX[1]*XDy[0]+iXDX[3]*XDy[1];
-      }
-      else {
-	matrix_invert( q0+n_genetic_effects, XDX, iXDX );
-	//cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
-	q = q0+n_genetic_effects;
-	dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
-      }
       double residual_var = (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
 	(nf - q0 - n_genetic_effects);
 
@@ -1129,8 +1140,9 @@ int main(int argc, char** argv) {
       fprintf(outh.fp,"\t%s",tped_headers[0]);
       fprintf(outh.fp,"\t%s",tped_headers[3]);
 
-      /* Output the percent variance explained of the whole model */
+      /* Output the percent variance explained of the whole model and PVE of genetic effects */
       fprintf(outh.fp,"\t%1.1f", (1. - residual_var/phenotype_var)*100.);
+      fprintf(outh.fp,"\t%1.1f", (1. - residual_var/null_model_residual_var)*100.);
       
       /* Output the beta, p-value, allele frequency, and PVE for the scan marker */
       fprintf(outh.fp,"\t%-.*lg",ndigits,betas[q0]);
