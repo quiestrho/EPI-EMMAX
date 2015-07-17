@@ -41,7 +41,7 @@
 #define MAXIT 1000
 #define EIGEN_EPS 1e-10
 #define EIGEN_ADD 1.
-#define TOL 1e-6
+#define TOL 1e-10
 #define EPS 1e-10
 #define DEFAULT_NGRIDS 100
 #define DEFAULT_LLIM -10
@@ -1417,8 +1417,8 @@ int eigen_R_wo_Z(int n, int q, double* kins, double* X, double* eRvals, double* 
 double LL_REML_wo_Z(int nq, double logdelta, double* lambdas, double* etas) {
   int i;
   double delta = exp(logdelta);
-  double sum1 = 0.;
-  double sum2 = 0.;
+  long double sum1 = 0.;
+  long double sum2 = 0.;
   for(i=0; i < nq; ++i) {
     sum1 += etas[i]*etas[i]/(lambdas[i]+delta);
     sum2 += log(lambdas[i]+delta);
@@ -1428,7 +1428,7 @@ double LL_REML_wo_Z(int nq, double logdelta, double* lambdas, double* etas) {
 
 double LL_REML_wo_Z_inf_delta(int nq, double* lambdas, double* etas) {
   int i;
-  double sum1 = 0.;
+  long double sum1 = 0.;
   for(i=0; i < nq; ++i) {
     sum1 += etas[i]*etas[i];
   }
@@ -1438,9 +1438,9 @@ double LL_REML_wo_Z_inf_delta(int nq, double* lambdas, double* etas) {
 double dLL_REML_wo_Z(int nq, double logdelta, double* lambdas, double* etas) {
   int i;
   double delta = exp(logdelta);
-  double sum1 = 0.;
-  double sum2 = 0.;
-  double sum3 = 0.;
+  long double sum1 = 0.;
+  long double sum2 = 0.;
+  long double sum3 = 0.;
   double f;
   for(i=0; i < nq; ++i) {
     f = (etas[i]*etas[i])/(lambdas[i]+delta);
