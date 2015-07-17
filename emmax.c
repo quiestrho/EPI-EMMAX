@@ -330,8 +330,11 @@ static int *load_covariate_marker(int n_indv, char *tped_basename,
   fclose(f);
 
   if (n == 0) {
-    fprintf(stderr,"Error: covariate SNP %s was not found in %s\n", covariate_snpid, tped_fname);
-    exit(-1);
+    fprintf(stderr,"Error: covariate SNP %s was not found in %s. Substituting random genotypes\n", covariate_snpid, tped_fname);
+    for(i=0; i < n_indv; i++) {
+      double r = rand()/(RAND_MAX + 1.0);
+      covariate_genotypes[i] = r < 0.5 ? -1. : 1;
+    }
   }
   
   return covariate_genotypes;
@@ -1002,8 +1005,8 @@ int main(int argc, char** argv) {
     for(trial=0; trial < 1000; trial++) {
       for(k=0; k < n_genetic_effects; k++) {
 	for(j=0; j < nf; j++) {
-	  double r = rand()/(RAND_MAX + 1.0) < 0.5;
-	  x1[j + nf*k] = r < 0.5 ? 0. : ( r < 0.25 ? -1. : 1.);
+	  double r = rand()/(RAND_MAX + 1.0);
+	  x1[j + nf*k] = r < 0.5 ? -1. : 1.;
 	}
       }
       dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
