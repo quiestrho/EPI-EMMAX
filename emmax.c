@@ -229,9 +229,13 @@ static void set_genotype_values(double *gv, int *g, int n) {
 
 static void set_interaction_values(double *gi, int *g1, int *g2, int n) {
   int i;
-
-  for(i=0; i < n; i++) gi[i] = 0;
+  int nvals;
+  double sum;
   
+  for(i=0; i < n; i++) gi[i] = 0;
+
+  nvals = 0;
+  sum = 0.;
   for(i=0; i < n; i++) {
     if (g1[i] != GT_MISSING || g2[i] != GT_MISSING) {
       if (g1[i] == GT_AA && g2[i] == GT_AA) {
@@ -243,8 +247,16 @@ static void set_interaction_values(double *gi, int *g1, int *g2, int n) {
       } else if (g1[i] == GT_BB && g2[i] == GT_BB) {
 	gi[i] = -1.;
       }
+      sum += gi[i];
+      nvals++;
+    } else {
+      gi[i] = DBL_MISSING;
     }
   }
+
+  sum /= nvals;
+  for(i=0; i < n; i++)
+    if (gi[i] == DBL_MISSING) gi[i] = sum;
 }
 
 static int extract_covariate_snpids(char ***r_ids, char *snpid_list) {
@@ -1076,13 +1088,6 @@ int main(int argc, char** argv) {
       if (maf_threshold < 1.0 && (allele_freq < maf_threshold || 1.0 - allele_freq < maf_threshold))
       	  continue;
 
-      for(j=0; j < nf; ++j) {
-	if ( x1[j] == DBL_MISSING ) {
-	  x1[j] = sum/(double)(nf-nmiss);
-	  //fprintf(stderr,"%d %.5lf\n",j,x1[j]);
-	}
-      }
-
       for(k=0; k < n_covariate_snps; k++) {
 	rsq[k] = calculate_rsq(genotypes, covariate_genotypes[k], n);
 	for(j=0; j < nf; j++) x1[j+(k+1)*nf] = covariate_values[k][wids[j]];
@@ -1144,29 +1149,29 @@ int main(int argc, char** argv) {
       fprintf(outh.fp,"\t%s",tped_headers[3]);
 
       /* Output the percent variance explained of the whole model and PVE of genetic effects */
-      fprintf(outh.fp,"\t%1.1f", (1. - residual_var/phenotype_var)*100.);
-      fprintf(outh.fp,"\t%1.1f", (1. - residual_var/null_model_residual_var)*100.);
+      fprintf(outh.fp,"\t%3.1f", (1. - residual_var/phenotype_var)*100.);
+      fprintf(outh.fp,"\t%3.1f", (1. - residual_var/null_model_residual_var)*100.);
       
       /* Output the beta, p-value, allele frequency, and PVE for the scan marker */
-      fprintf(outh.fp,"\t%-.*lg",ndigits,betas[q0]);
-      fprintf(outh.fp,"\t%-.*lg",ndigits,p);
-      fprintf(outh.fp,"\t%1.3f", allele_freq);
-      fprintf(outh.fp,"\t%1.2f", percent_variance_explained);
+      fprintf(outh.fp,"\t%+6.3f", betas[q0]);
+      fprintf(outh.fp,"\t%4.2f", -log10(p));
+      fprintf(outh.fp,"\t%5.3f", allele_freq);
+      fprintf(outh.fp,"\t%4.2f", percent_variance_explained);
 
       /* Output terms for covariate SNPs that were modeled along with the scan marker */
       for(k=0; k < n_covariate_snps; k++) {
-	fprintf(outh.fp,"\t%-.*lg",ndigits,betas[q0+k+1]);
+	fprintf(outh.fp,"\t%+6.3f", betas[q0+k+1]);
 	stat = betas[q0+k+1]/
 	  sqrt( iXDX[(q0+k+1)*(q0+n_genetic_effects)+q0+k+1]*
 		( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) /
 		( nf - q0 - n_genetic_effects ) );
 	p = tcdf(stat, nf-q0-n_genetic_effects);
 	
-	fprintf(outh.fp,"\t%-.*lg", ndigits, p);
-	fprintf(outh.fp,"\t%1.3f", rsq[k]);
+	fprintf(outh.fp,"\t%4.2f", -log10(p));
+	fprintf(outh.fp,"\t%5.3f", rsq[k]);
 	percent_variance_explained = 2*covariate_afreq[k]*(1. - covariate_afreq[k])*
 	  (betas[q0+k+1]*betas[q0+k+1])/phenotype_var*100.;
-	fprintf(outh.fp,"\t%1.3f", percent_variance_explained);
+	fprintf(outh.fp,"\t%4.2f", percent_variance_explained);
       }
 
       /* If genetic interaction terms were modeled, output their betas and p-values */
@@ -1175,22 +1180,22 @@ int main(int argc, char** argv) {
 	  int col = q0 + n_covariate_snps +1 + k;
 	  int df = nf - q0 - n_genetic_effects;
 	    
-	  fprintf(outh.fp,"\t%-.*lg",ndigits,betas[col]);
+	  fprintf(outh.fp,"\t%+6.3f", betas[col]);
 	  stat = betas[col]/
 	    sqrt( iXDX[(col)*(q0+n_genetic_effects)+col]*
 		  ( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) / df );
 	  p = tcdf(stat, df);
-	  fprintf(outh.fp,"\t%-.*lg", ndigits, p);
+	  fprintf(outh.fp,"\t%4.2f", -log(p));
 	}
       }
 
       /* Output external covariate terms, including intercept, in columns following the
 	 genetic effects above */
       for(k=0; k < q0; k++) {
-	fprintf(outh.fp,"\t%-.*lg",ndigits,betas[k]);	
+	fprintf(outh.fp,"\t%6.3f", betas[k]);	
 	stat = betas[k]/sqrt( iXDX[k*(q0+n_genetic_effects) + k]*( yDy - mult_vec_mat_vec( XDy, iXDX, q0+n_genetic_effects ) ) / (nf - q0 - n_genetic_effects));
 	p = tcdf(stat, nf-q0-n_genetic_effects);
-	fprintf(outh.fp,"\t%-.*lg", ndigits, p);
+	fprintf(outh.fp,"\t%4.2f", -log10(p));
       }
       fprintf(outh.fp,"\n");
       
