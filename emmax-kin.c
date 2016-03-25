@@ -8,7 +8,9 @@
 #include <sys/time.h>
 #include <zlib.h>
 
+#ifdef INTEL_COMPILER
 #include "mkl.h"
+#endif
 
 //#define FIBS_UNIT 1000
 #define DEFAULT_NDIGITS 10

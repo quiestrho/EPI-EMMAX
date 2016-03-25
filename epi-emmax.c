@@ -10,12 +10,15 @@
 #include <unistd.h>
 #include <float.h>
 #include <time.h>
-//#include <cblas.h>
-//#include <clapack.h>
 #include <zlib.h>
 //#include "lapack_wrapper.h"
 
+#ifdef INTEL_COMPILER
 #include "mkl.h"
+#else
+#include <cblas.h>
+#include <lapacke.h>
+#endif
 
 // Constants for I/O routines
 #define DEFAULT_TFAM_NCOLS 6
@@ -354,7 +357,7 @@ static int *load_covariate_marker(int n_indv, char *tped_basename,
 
 /* KONI - 2015-07-11 - added this routine for aiding debugging */
 static void print_matrix(FILE *f, char *label, double *mat, int n, int m) {
-  int j,k;
+  int j;
 
   fprintf(f,"%s\n",label);
   for(j=0; j < n; ++j) {
@@ -438,7 +441,7 @@ static void print_output_header(FILE *f, char **covariate_snpids, int n_covariat
 }
 
 int main(int argc, char** argv) {
-  int i, j, k, l, n, nf, q0, q, ngrids, ndigits, istart, iend, nelems, nmiss, *wids, c;
+  int i, j, k, l, n, nf, q, q0, ngrids, ndigits, istart, iend, nelems, nmiss, *wids, c;
   char *kinf, *phenof, *tpedf, *covf, *outf, *inf, *delims, *lbuf;
   int mphenoflag, write_eig_flag, gz_flag, tped_nheadercols, tfam_nheadercols, zero_miss_flag, isnpid, gen_kin_method, gls_flag;
   double *phenos, *covs, *kins, *snps;
@@ -961,13 +964,15 @@ int main(int argc, char** argv) {
 
     fprintf(stderr,"Solving t(eLvecs) %%*%% X0...\n");
     // X0t = t(eLvecs) %*% X0
-    //cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, nf, q0, nf, 1.0, eLvecs, nf, X0, nf, 0.0, X0t, nf );
-    dgemm(&ct,&cn,&nf,&q0,&nf,&onef,eLvecs,&nf,X0,&nf,&zerof,X0t,&nf);
-
     // yt = t(eLvecs) %*% y
-    //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, y, 1, 0., yt, 1);
+#ifdef INTEL_COMPILER
+    dgemm(&ct,&cn,&nf,&q0,&nf,&onef,eLvecs,&nf,X0,&nf,&zerof,X0t,&nf);
     dgemv( &ct,&nf, &nf, &onef, eLvecs, &nf, y, &onen, &zerof, yt, &onen);
-    
+#else
+    cblas_dgemm( CblasColMajor, CblasTrans, CblasNoTrans, nf, q0, nf, 1.0, eLvecs, nf, X0, nf, 0.0, X0t, nf );
+    cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, y, 1, 0., yt, 1);
+#endif
+
     outh = open_file_with_suffix(outf,"ps",0,1);
     
     // symmetric - both RowMajor & ColMajor
@@ -1021,13 +1026,19 @@ int main(int argc, char** argv) {
 	  x1[j + nf*k] = r < 0.5 ? -1. : 1.;
 	}
       }
+#ifdef INTEL_COMPILER
       dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
+#else
+#endif
       fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, n_genetic_effects, XDX );
       fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, n_genetic_effects, XDy );
       matrix_invert( q0+n_genetic_effects, XDX, iXDX );
       q = q0+n_genetic_effects;
-      //cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+#ifdef INTEL_COMPILER
       dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
+#else
+      cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+#endif
 
       null_model_residual_var += (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
 	(nf - q0 - n_genetic_effects);
@@ -1103,17 +1114,24 @@ int main(int argc, char** argv) {
 
       clapstart = clock();
       // x1t = t(eLvecs) %*% x1
-      //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, x1, 1, 0., x1t, 1);
       //    Ta   TB   M    N         K    alpha  A            B        Beta    C    
+#ifdef INTEL_COMPILER
       dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
+#else
+      //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, x1, 1, 0., x1t, 1);
+#endif
+
       fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, n_genetic_effects, XDX );
       fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, n_genetic_effects, XDy );
 
     
       matrix_invert( q0+n_genetic_effects, XDX, iXDX );
       q = q0+n_genetic_effects;
-      //cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+#ifdef INTEL_COMPILER
       dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
+#else
+      cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+#endif
 
       double residual_var = (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
 	(nf - q0 - n_genetic_effects);
@@ -1280,8 +1298,11 @@ int eigen_R_wo_Z(int n, int q, double* kins, double* X, double* eRvals, double* 
 
   // first compute XtX = t(X) %*% X
   double* XtX = (double*)calloc(q*q, sizeof(double));
-  //cblas_dgemm(CblasColMajor,CblasTrans,CblasNoTrans,q,q,n,1.,X,n,X,n,0.,XtX,q);
+#ifdef INTEL_COMPILER
   dgemm(&ct,&cn,&q,&q,&n,&onef,X,&n,X,&n,&zerof,XtX,&q);
+#else
+  cblas_dgemm(CblasColMajor,CblasTrans,CblasNoTrans,q,q,n,1.,X,n,X,n,0.,XtX,q);
+#endif
 
   // Compute iXtX = solve(XtX)
   double* iXtX = (double*)calloc(q*q, sizeof(double));
@@ -1290,28 +1311,40 @@ int eigen_R_wo_Z(int n, int q, double* kins, double* X, double* eRvals, double* 
   // Compute XtiXtXX X %*% solve(t(X)%*%X) %*%t(X)
 
   double* XiXtX = (double*)calloc(n*q, sizeof(double));
-  //cblas_dgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,n,q,q,1.,X,n,iXtX,q,0.,XiXtX,n);
+#ifdef INTEL_COMPILER
   dgemm(&cn,&cn,&n,&q,&q,&onef,X,&n,iXtX,&q,&zerof,XiXtX,&n);
-  
+#else
+  cblas_dgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,n,q,q,1.,X,n,iXtX,q,0.,XiXtX,n);
+#endif
+
   // S = I
   double* S = (double*)calloc(n*n,sizeof(double));
   for(i=0; i < n; ++i) {
     S[i+i*n] = 1.;
   }
   // S = -1*(XtiXtX %*%t(X) + 1*(S=I)
-  //cblas_dgemm(CblasColMajor,CblasNoTrans,CblasTrans,n,n,q,-1.,XiXtX,n,X,n,1.,S,n);
+#ifdef INTEL_COMPILER
   dgemm(&cn, &ct, &n, &n, &q, &minusonef, XiXtX, &n, X, &n, &onef, S, &n);
+#else
+  cblas_dgemm(CblasColMajor,CblasNoTrans,CblasTrans,n,n,q,-1.,XiXtX,n,X,n,1.,S,n);
+#endif
   //fprintf(stderr,"S[0] = %lf, S[1] = %lf, S[n*n-1] = %lf\n",S[0],S[1],S[n*n-1]);
 
   // SKS = S %*% K %*% S
   double* SK = (double*)calloc(n*n,sizeof(double));
-  //cblas_dgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,n,n,n,1.,S,n,kins_copy,n,0.,SK,n);
+#ifdef INTEL_COMPILER
   dgemm(&cn, &cn, &n, &n, &n, &onef, S, &n, kins_copy, &n, &zerof, SK, &n);
+#else
+  cblas_dgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,n,n,n,1.,S,n,kins_copy,n,0.,SK,n);
+#endif
   //fprintf(stderr,"kins[0] = %lf, kins[1] = %lf, kins[n*n-1] = %lf\n",kins[0],kins[1],kins[n*n-1]);
 
   double* SKS = (double*)calloc(n*n,sizeof(double));
-  //cblas_dgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,n,n,n,1.,SK,n,S,n,0.,SKS,n);
+#ifdef INTEL_COMPILER
   dgemm(&cn, &cn, &n, &n, &n, &onef, SK, &n, S, &n, &zerof, SKS, &n);
+#else
+  cblas_dgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,n,n,n,1.,SK,n,S,n,0.,SKS,n);
+#endif
   //ensure_symmetry_and_relax_diag( SKS, n, TOL, TOL );
 
   double* evals = (double*)malloc(sizeof(double)*n);
@@ -2248,7 +2281,11 @@ int eigen_decomposition(int n, double* X, double *eigvec, double *eigval) {
   
   vector_copy(n*n, X, eigvec);
 
+#ifdef INTEL_COMPILER
   dsyevd(&cv,&cl, &n, eigvec, &n, eigval, work, &lwork, iwork, &liwork, &info);
+#else
+  dsyevd_(&cv,&cl, &n, eigvec, &n, eigval, work, &lwork, iwork, &liwork, &info);
+#endif
   //sizeWORK = (int)WORK[0]; 
   //sizeIWORK = IWORK[0]; 
   
@@ -2297,7 +2334,11 @@ int matrix_invert(int n, double *X, double *Y) {
   
   /*  Turn Y into its LU form, store pivot matrix  */
   //info = clapack_dgetrf (CblasColMajor, n, n, Y, n, ipiv);
+#ifdef INTEL_COMPILER
   dgetrf(&n,&n,Y,&n,ipiv,&info);
+#else
+  dgetrf_(&n,&n,Y,&n,ipiv,&info);
+#endif
   
   /*  Don't bother continuing when illegal argument (info<0) or singularity (info>0) occurs  */
   if (info!=0) return info;
@@ -2307,7 +2348,11 @@ int matrix_invert(int n, double *X, double *Y) {
   //  double* work = malloc(sizeof(double)*lwork);
   /*  Feed this to the lapack inversion routine.  */
   //info = clapack_dgetri (CblasColMajor, n, Y, n, ipiv);
+#ifdef INTEL_COMPILER
   dgetri(&n,Y,&n,ipiv,work,&lwork,&info);
+#else
+  dgetri_(&n,Y,&n,ipiv,work,&lwork,&info);
+#endif
   
   /*  Cleanup and exit  */
   //  free(ipiv);
