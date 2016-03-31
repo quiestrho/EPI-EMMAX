@@ -545,7 +545,7 @@ K = t(Xn) %*% Xn / L
 #ifdef INTEL_COMPILER
       dgemm(&ct,&cn,&n,&n,&n_unit_lines,&one,snpunit,&n_unit_lines,snpunit,&n_unit_lines,&one,kin,&n);
 #else
-      cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n, n, n_unit_lines, 1.0, snpunit, n_unit_lines, snpunit, n_unit_lines, 1.0, kin, n);
+      cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, n, n, n_unit_lines, 1.0, snpunit, n_unit_lines, snpunit, n_unit_lines, 1.0, kin, n);
 #endif
       memset(snpunit, 0, sizeof(double)*n_unit_lines*n);
 
@@ -565,7 +565,7 @@ K = t(Xn) %*% Xn / L
 #ifdef INTEL_COMPILER
     dgemm(&ct,&cn,&n,&n,&n_unit_lines,&one,snpunit,&n_unit_lines,snpunit,&n_unit_lines,&one,kin,&n);
 #else
-    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n, n, n_unit_lines, 1.0, snpunit, n_unit_lines, snpunit, n_unit_lines, 1.0, kin, n);
+    cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, n, n, n_unit_lines, 1.0, snpunit, n_unit_lines, snpunit, n_unit_lines, 1.0, kin, n);
 #endif
     n_sum_nin += nin;
   }
