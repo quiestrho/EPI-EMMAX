@@ -10,6 +10,8 @@
 
 #ifdef INTEL_COMPILER
 #include "mkl.h"
+#else
+#include <cblas.h>
 #endif
 
 //#define FIBS_UNIT 1000
@@ -352,9 +354,11 @@ int main(int argc, char** argv) {
   // m < M*1e9/sizeof(double)/n - n
   n_unit_lines = (int)floor((max_memory_GB * 1.0e9 / sizeof(double) / n - n)/2)*2;
   n_sum_nin = 0;
+#ifdef INTEL_COMPILER
   char cn = 'N', ct = 'T';
   double one = 1.;
-
+#endif
+  
   if ( verbose ) fprintf(stderr,"Setting # unit lines = %d to fit the memory requirement\n",n_unit_lines);
 
   snprow = (unsigned char*)malloc(sizeof(unsigned char)*n);
@@ -538,7 +542,11 @@ K = t(Xn) %*% Xn / L
 	fprintf(stderr,"At SNP %d, intermediately computing kinship matrix with %d SNPs..\n",i,n_unit_lines);
       }
       // kin = kin + t(snpunit)%*%(snpunit)
+#ifdef INTEL_COMPILER
       dgemm(&ct,&cn,&n,&n,&n_unit_lines,&one,snpunit,&n_unit_lines,snpunit,&n_unit_lines,&one,kin,&n);
+#else
+      cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n, n, n_unit_lines, 1.0, snpunit, n_unit_lines, snpunit, n_unit_lines, 1.0, kin, n);
+#endif
       memset(snpunit, 0, sizeof(double)*n_unit_lines*n);
 
       n_sum_nin += nin;
@@ -554,7 +562,11 @@ K = t(Xn) %*% Xn / L
     if ( verbose ) {
       fprintf(stderr,"Computing kinship matrix with the remaining %d SNPs..\n",nin);
     }
+#ifdef INTEL_COMPILER
     dgemm(&ct,&cn,&n,&n,&n_unit_lines,&one,snpunit,&n_unit_lines,snpunit,&n_unit_lines,&one,kin,&n);
+#else
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, n, n, n_unit_lines, 1.0, snpunit, n_unit_lines, snpunit, n_unit_lines, 1.0, kin, n);
+#endif
     n_sum_nin += nin;
   }
 
