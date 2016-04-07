@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.59])
-AC_INIT([epi-emmax], [v1.00-r0], [slowkoni@gmail.com])
+AC_INIT([epi-emmax], [v1.01-r0], [slowkoni@gmail.com])
 AC_CONFIG_SRCDIR([emmax-kin.c])
 AM_INIT_AUTOMAKE
 
@@ -13,7 +13,6 @@ AC_PROG_CXX
 AC_PROG_CC
 
 # Checks for libraries.
-# FIXME: Replace `main' with a function in `-lpthread':
 AC_CHECK_LIB([pthread], [pthread_create])
 AC_CHECK_LIB([m], [exp])
 AC_CHECK_LIB([z], [gzopen])

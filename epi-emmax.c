@@ -66,16 +66,18 @@ struct HFILE {
 } g_logh;
 
 static int g_verbose = 0;
+#ifdef INTEL_COMPILER
 static char ct = 'T';
 static char cn = 'N';
-static char cv = 'V';
-static char cl = 'L';
 static double onef = 1.0;
 static double zerof = 0.0;
 static double minusonef = -1.0;
 static int onen = 1;
 static int dim_int;
 static int dim_f;
+#endif
+static char cv = 'V';
+static char cl = 'L';
 
 // Input routines
 void close_file (struct HFILE* fhp);
@@ -135,14 +137,14 @@ static void compute_phenotype_summary_stats(double *rval_mean,
   *rval_var = msq/n - m*m;
 }
 
-static void standardize_phenotype(double *phenotypes, int n, double m, double s) {
+static void __attribute__((unused))standardize_phenotype(double *phenotypes, int n, double m, double s) {
   int i;
   
   for(i=0; i < n; i++) 
     phenotypes[i] = (phenotypes[i] - m)/s;
 }
 
-static double compute_regressed_phenotype_variance(double *phenotypes,
+static double __attribute__((unused))compute_regressed_phenotype_variance(double *phenotypes,
 						   int n,
 						   double *betas,
 						   double *covariates,
@@ -355,7 +357,7 @@ static int *load_covariate_marker(int n_indv, char *tped_basename,
 }
 
 /* KONI - 2015-07-11 - added this routine for aiding debugging */
-static void print_matrix(FILE *f, char *label, double *mat, int n, int m) {
+static void __attribute__((unused))print_matrix(FILE *f, char *label, double *mat, int n, int m) {
   int j;
 
   fprintf(f,"%s\n",label);
@@ -562,14 +564,14 @@ int main(int argc, char** argv) {
     default:
       fprintf(stderr,"Error : Unknown option character %c",c);
       print_help();
-      abort();
+      exit(-1);
     }
   }
 
   // Sanity check for the number of required parameters
   if ( argc > optind ) {
     print_help();
-    exit(0);//abort();
+    exit(-1);//abort();
   }
 
   n_covariate_snps = extract_covariate_snpids(&covariate_snpids, covariate_snplist);
@@ -813,6 +815,8 @@ int main(int argc, char** argv) {
   } else {
     covariate_genotypes = NULL;
     covariate_values    = NULL;
+    rsq = NULL;
+    covariate_afreq = NULL;
   }
   
   /* Koni - 2014-07-02 
@@ -1015,7 +1019,7 @@ int main(int argc, char** argv) {
        explained. That variance is just that which is explained by the kinship matrix and
        any fixed covariate terms supplied as a file that are not genetic terms as per those
        specified on the command line, a genome scan marker, or any interaction term. */
-    srand(time(NULL));
+    srand(0xDEADBEEF);
     int trial;
     double null_model_residual_var = 0.;
     for(trial=0; trial < 1000; trial++) {
@@ -2142,7 +2146,7 @@ void emmax_error( const char* format, ... ) {
   vfprintf(stderr, format, args);
   va_end (args);
   fprintf(stderr,"\n");
-  abort();
+  exit(-1);
 }
 
 void emmax_log( const char* format, ... ) {
@@ -2179,7 +2183,7 @@ double centered_trace(double* kin, int n) {
 }
 
 void print_help(void) {
-  fprintf(stderr,"Usage: emmax [options]\n");
+  fprintf(stderr,"Usage: epi-emmax [options]\n");
   fprintf(stderr,"Required parameters\n");
   fprintf(stderr,"\t-t [tpedf_prefix] : prefix for tped/tfam files\n");
   fprintf(stderr,"\t-o [out_prefix]  : output file name prefix\n");
@@ -2197,6 +2201,7 @@ void print_help(void) {
   fprintf(stderr,"\t-D [delimiters] : delimter string in quotation marks\n");
   fprintf(stderr,"\t-P [# heaer cols in tped] : # of column headers in tped file\n");
   fprintf(stderr,"\t-F [# heaer cols in tfam] : # of column headers in tfam file\n");
+  exit(-1);
 }
 
 void vector_copy(int n, double* X, double* Y) {
