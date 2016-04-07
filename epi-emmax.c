@@ -17,7 +17,6 @@
 #include "mkl.h"
 #else
 #include <cblas.h>
-#include <lapacke.h>
 #endif
 
 // Constants for I/O routines
@@ -1029,6 +1028,7 @@ int main(int argc, char** argv) {
 #ifdef INTEL_COMPILER
       dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
 #else
+      cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, nf, n_genetic_effects, nf, 1.0, eLvecs, nf, x1, nf, 0.0, x1t, nf);
 #endif
       fill_XDX_X1 ( X0t, x1t, eLvals, optdelta, nf, q0, n_genetic_effects, XDX );
       fill_XDy_X1 ( x1t, yt, eLvals, optdelta, nf, q0, n_genetic_effects, XDy );
@@ -1037,7 +1037,8 @@ int main(int argc, char** argv) {
 #ifdef INTEL_COMPILER
       dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
 #else
-      cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+      //      cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+      cblas_dgemv(CblasColMajor, CblasNoTrans, q, q, 1., iXDX, q, XDy, 1, 0., betas, 1);
 #endif
 
       null_model_residual_var += (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
@@ -1118,6 +1119,7 @@ int main(int argc, char** argv) {
 #ifdef INTEL_COMPILER
       dgemm(&ct, &cn, &nf, &n_genetic_effects, &nf, &onef, eLvecs, &nf, x1, &nf, &zerof, x1t, &nf);
 #else
+      cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans, nf, n_genetic_effects, nf, 1.0, eLvecs, nf, x1, nf, 0.0, x1t, nf);
       //cblas_dgemv(CblasColMajor, CblasTrans, nf, nf, 1., eLvecs, nf, x1, 1, 0., x1t, 1);
 #endif
 
@@ -1130,7 +1132,8 @@ int main(int argc, char** argv) {
 #ifdef INTEL_COMPILER
       dgemv(&cn, &q, &q, &onef, iXDX, &q, XDy, &onen, &zerof, betas, &onen);
 #else
-      cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+      //      cblas_dgemv(CblasColMajor, CblasNoTrans, q0+1, q0+1, 1., iXDX, q0+1, XDy, 1, 0., betas, 1);
+      cblas_dgemv(CblasColMajor, CblasNoTrans, q, q, 1., iXDX, q, XDy, 1, 0., betas, 1);
 #endif
 
       double residual_var = (yDy - mult_vec_mat_vec(XDy, iXDX, q0 + n_genetic_effects))/
